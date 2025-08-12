@@ -169,3 +169,5 @@ pnnx*
 
 # calibration image
 calibration_*.npy
+*yaml
+*zip
