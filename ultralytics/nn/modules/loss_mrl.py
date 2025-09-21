@@ -36,11 +36,40 @@ class MatryoshkaDetectionLoss:
             feats = preds[1] if isinstance(preds, tuple) and len(preds) == 2 else preds
             feats_list = [feats]
 
+        # Build weights (default to equal weights if none provided)
+        num_sets = len(feats_list)
+        weights = getattr(self.hyp, "matryoshka_weights", None)
+        if weights is None:
+            weights_tensor = torch.ones(num_sets, device=self.device) / max(num_sets, 1)
+        else:
+            # Convert to tensor and normalize to sum to 1; fall back to equal if shape mismatch
+            try:
+                weights_tensor = torch.as_tensor(
+                    weights, dtype=torch.float32, device=self.device
+                )
+                if weights_tensor.numel() != num_sets:
+                    weights_tensor = torch.ones(num_sets, device=self.device) / max(
+                        num_sets, 1
+                    )
+                else:
+                    s = weights_tensor.sum()
+                    if s <= 0:
+                        weights_tensor = torch.ones(num_sets, device=self.device) / max(
+                            num_sets, 1
+                        )
+                    else:
+                        weights_tensor = weights_tensor / s
+            except Exception:
+                weights_tensor = torch.ones(num_sets, device=self.device) / max(
+                    num_sets, 1
+                )
+
         # Calculate and accumulate loss for each set of feature maps
-        for f in feats_list:
+        for i, f in enumerate(feats_list):
             # v8_loss returns (scalar loss for backprop, tensor of 3 losses for display)
             scalar_loss, detached_losses = self.v8_loss(f, batch)
-            total_loss += scalar_loss / len(feats_list)
-            loss_items += detached_losses / len(feats_list)
+            w = weights_tensor[i]
+            total_loss += scalar_loss * w
+            loss_items += detached_losses * w
 
         return total_loss, loss_items
