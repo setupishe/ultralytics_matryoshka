@@ -107,13 +107,34 @@ class MatryoshkaDetectionLoss:
             except Exception:
                 weights_tensor = torch.ones(num_sets, device=self.device)
 
-        # Optional auxiliary-weight warmup: ramp only auxiliary weights; keep full-width weight unchanged.
+        # Optional auxiliary-weight warmup: ramp auxiliary weights only; keep full-width weight unchanged.
+        # Controls:
+        # - matryoshka_weight_warmup (bool): enable/disable warmup.
+        # - matryoshka_weight_warmup_steps (int): number of warmup steps (loss calls) over which aux weights ramp 0->1.
+        # - matryoshka_weight_warmup_start_step (int): delay warmup start by N loss calls (0 = start immediately).
+        warmup_enabled = bool(getattr(self.hyp, "matryoshka_weight_warmup", False))
         warmup_steps = int(getattr(self.hyp, "matryoshka_weight_warmup_steps", 0) or 0)
-        if warmup_steps > 0 and num_sets > 1:
-            t = min((self._matryoshka_step + 1) / warmup_steps, 1.0)
-            weights_tensor = weights_tensor.clone()
-            weights_tensor[:-1] *= t  # auxiliaries
-            self._matryoshka_step += 1
+        warmup_start = int(
+            getattr(self.hyp, "matryoshka_weight_warmup_start_step", 0) or 0
+        )
+        step = int(self._matryoshka_step)
+
+        if warmup_enabled and warmup_steps > 0 and num_sets > 1:
+            # progress t in [0, 1]
+            # - before start: t=0
+            # - from start..start+steps-1: linear ramp
+            # - after: t=1
+            rel = step - warmup_start
+            if rel < 0:
+                t = 0.0
+            else:
+                t = min((rel + 1) / warmup_steps, 1.0)
+            if t != 1.0:
+                weights_tensor = weights_tensor.clone()
+                weights_tensor[:-1] *= t  # auxiliaries
+
+        # advance local step counter once per call (regardless of enablement)
+        self._matryoshka_step += 1
 
         # Calculate and accumulate loss for each set of feature maps
         shared_assign = bool(getattr(self.hyp, "matryoshka_shared_assign", False))

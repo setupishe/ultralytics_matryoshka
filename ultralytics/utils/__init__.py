@@ -560,6 +560,11 @@ DEFAULT_CFG_DICT["matryoshka"] = False
 DEFAULT_CFG_DICT["matryoshka_weights"] = None
 DEFAULT_CFG_DICT["matryoshka_shared_assign"] = False
 DEFAULT_CFG_DICT["matryoshka_bn_aux_freeze"] = False
+DEFAULT_CFG_DICT["matryoshka_weight_warmup_steps"] = 0
+# Optional Matryoshka weight warmup (applies to auxiliary granularities only; full-width unchanged).
+DEFAULT_CFG_DICT["matryoshka_weight_warmup"] = False
+# Warmup starts after this many calls to the loss (0 = start immediately).
+DEFAULT_CFG_DICT["matryoshka_weight_warmup_start_step"] = 0
 DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
 
 
