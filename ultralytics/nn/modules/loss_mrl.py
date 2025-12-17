@@ -18,6 +18,7 @@ class MatryoshkaDetectionLoss:
         self.device = next(model.parameters()).device
         self.hyp = model.args
         self.v8_loss = v8DetectionLoss(model)
+        self._matryoshka_step = 0  # local step counter for scheduling
 
     def _loss_with_shared_assign(
         self,
@@ -93,29 +94,26 @@ class MatryoshkaDetectionLoss:
         num_sets = len(feats_list)
         weights = getattr(self.hyp, "matryoshka_weights", None)
         if weights is None:
-            weights_tensor = torch.ones(num_sets, device=self.device) / max(num_sets, 1)
+            # NOTE: no normalization; this preserves full-width gradient scale.
+            weights_tensor = torch.ones(num_sets, device=self.device)
         else:
-            # Convert to tensor and normalize to sum to 1; fall back to equal if shape mismatch
+            # Convert to tensor; fall back to equal if shape mismatch. No normalization.
             try:
                 weights_tensor = torch.as_tensor(
                     weights, dtype=torch.float32, device=self.device
                 )
                 if weights_tensor.numel() != num_sets:
-                    weights_tensor = torch.ones(num_sets, device=self.device) / max(
-                        num_sets, 1
-                    )
-                else:
-                    s = weights_tensor.sum()
-                    if s <= 0:
-                        weights_tensor = torch.ones(num_sets, device=self.device) / max(
-                            num_sets, 1
-                        )
-                    else:
-                        weights_tensor = weights_tensor / s
+                    weights_tensor = torch.ones(num_sets, device=self.device)
             except Exception:
-                weights_tensor = torch.ones(num_sets, device=self.device) / max(
-                    num_sets, 1
-                )
+                weights_tensor = torch.ones(num_sets, device=self.device)
+
+        # Optional auxiliary-weight warmup: ramp only auxiliary weights; keep full-width weight unchanged.
+        warmup_steps = int(getattr(self.hyp, "matryoshka_weight_warmup_steps", 0) or 0)
+        if warmup_steps > 0 and num_sets > 1:
+            t = min((self._matryoshka_step + 1) / warmup_steps, 1.0)
+            weights_tensor = weights_tensor.clone()
+            weights_tensor[:-1] *= t  # auxiliaries
+            self._matryoshka_step += 1
 
         # Calculate and accumulate loss for each set of feature maps
         shared_assign = bool(getattr(self.hyp, "matryoshka_shared_assign", False))
