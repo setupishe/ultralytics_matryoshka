@@ -100,6 +100,13 @@ class DetectionTrainer(BaseTrainer):
         self.model.nc = self.data["nc"]  # attach number of classes to model
         self.model.names = self.data["names"]  # attach class names to model
         self.model.args = self.args  # attach hyperparameters to model
+        # Matryoshka BN fix: optionally freeze BN running-stat updates for auxiliary granularities only.
+        if getattr(self.args, "matryoshka", False):
+            head = de_parallel(self.model).model[-1]
+            if hasattr(head, "matryoshka_bn_aux_freeze"):
+                head.matryoshka_bn_aux_freeze = bool(
+                    getattr(self.args, "matryoshka_bn_aux_freeze", False)
+                )
         # TODO: self.model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc
 
     def get_model(self, cfg=None, weights=None, verbose=True):

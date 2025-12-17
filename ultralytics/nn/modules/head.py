@@ -1,6 +1,7 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 """Model head modules."""
 
+import contextlib
 import copy
 import math
 
@@ -33,12 +34,14 @@ class Detect(nn.Module):
     anchors = torch.empty(0)  # init
     strides = torch.empty(0)  # init
 
-    def __init__(self, nc=80, ch=(), matryoshka=False):
+    def __init__(self, nc=80, ch=(), matryoshka=False, matryoshka_bn_aux_freeze=False):
         """Initializes the YOLOv8 detection layer with specified number of classes and channels."""
         super().__init__()
         self.nc = nc  # number of classes
         self.nl = len(ch)  # number of detection layers
         self.matryoshka = matryoshka
+        # If True, freeze BN running-stat updates for auxiliary Matryoshka granularities (keep batch-stat behavior).
+        self.matryoshka_bn_aux_freeze = matryoshka_bn_aux_freeze
         self.ch = ch
 
         self.reg_max = (
@@ -70,6 +73,27 @@ class Detect(nn.Module):
             self.one2one_cv2 = copy.deepcopy(self.cv2)
             self.one2one_cv3 = copy.deepcopy(self.cv3)
 
+    @staticmethod
+    @contextlib.contextmanager
+    def _bn_momentum(modules, momentum: float):
+        """
+        Temporarily set BatchNorm momentum for given module(s).
+
+        Setting momentum=0.0 effectively freezes running_mean/var updates while keeping training-mode batch stats.
+        """
+        mods = modules if isinstance(modules, (tuple, list)) else (modules,)
+        bns = []
+        for mod in mods:
+            for m in mod.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    bns.append((m, m.momentum))
+                    m.momentum = momentum
+        try:
+            yield
+        finally:
+            for m, mom in bns:
+                m.momentum = mom
+
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
         if self.end2end:
@@ -80,33 +104,44 @@ class Detect(nn.Module):
             for i in range(self.nl):  # for each feature map
                 one_level_output = []
                 for g in self.matryoshka_granularities[i]:
+                    is_main = g == self.matryoshka_granularities[i][-1]
+                    freeze_aux_bn = (
+                        bool(getattr(self, "matryoshka_bn_aux_freeze", False))
+                        and not is_main
+                    )
                     x_sliced = x[i][:, :g, :, :]
 
-                    # Process with cv2
-                    cv2_0 = self.cv2[i][0]
-                    y = F.conv2d(
-                        x_sliced,
-                        cv2_0.conv.weight[:, :g, :, :],
-                        stride=cv2_0.conv.stride,
-                        padding=cv2_0.conv.padding,
+                    bn_ctx = (
+                        self._bn_momentum((self.cv2[i], self.cv3[i]), 0.0)
+                        if freeze_aux_bn
+                        else contextlib.nullcontext()
                     )
-                    y = cv2_0.bn(y)
-                    y = cv2_0.act(y)
-                    out_cv2 = self.cv2[i][1:](y)
+                    with bn_ctx:
+                        # Process with cv2
+                        cv2_0 = self.cv2[i][0]
+                        y = F.conv2d(
+                            x_sliced,
+                            cv2_0.conv.weight[:, :g, :, :],
+                            stride=cv2_0.conv.stride,
+                            padding=cv2_0.conv.padding,
+                        )
+                        y = cv2_0.bn(y)
+                        y = cv2_0.act(y)
+                        out_cv2 = self.cv2[i][1:](y)
 
-                    # Process with cv3
-                    cv3_0 = self.cv3[i][0]
-                    y = F.conv2d(
-                        x_sliced,
-                        cv3_0.conv.weight[:, :g, :, :],
-                        stride=cv3_0.conv.stride,
-                        padding=cv3_0.conv.padding,
-                    )
-                    y = cv3_0.bn(y)
-                    y = cv3_0.act(y)
-                    out_cv3 = self.cv3[i][1:](y)
+                        # Process with cv3
+                        cv3_0 = self.cv3[i][0]
+                        y = F.conv2d(
+                            x_sliced,
+                            cv3_0.conv.weight[:, :g, :, :],
+                            stride=cv3_0.conv.stride,
+                            padding=cv3_0.conv.padding,
+                        )
+                        y = cv3_0.bn(y)
+                        y = cv3_0.act(y)
+                        out_cv3 = self.cv3[i][1:](y)
 
-                    one_level_output.append(torch.cat((out_cv2, out_cv3), 1))
+                        one_level_output.append(torch.cat((out_cv2, out_cv3), 1))
                 outputs.append(one_level_output)
 
             # Transpose outputs to be [granularity][nl]
