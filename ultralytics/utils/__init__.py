@@ -558,6 +558,7 @@ for k, v in DEFAULT_CFG_DICT.items():
 DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
 DEFAULT_CFG_DICT["matryoshka"] = False
 DEFAULT_CFG_DICT["matryoshka_weights"] = None
+DEFAULT_CFG_DICT["matryoshka_shared_assign"] = False
 DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
 
 
