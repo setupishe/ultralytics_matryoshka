@@ -119,13 +119,17 @@ class BaseValidator:
             model.eval()
         else:
             callbacks.add_integration_callbacks(self)
-            model = AutoBackend(
-                weights=model or self.args.model,
-                device=select_device(self.args.device, self.args.batch),
-                dnn=self.args.dnn,
-                data=self.args.data,
-                fp16=self.args.half,
-            )
+            # Allow reusing an already-constructed AutoBackend to avoid re-loading weights across repeated eval runs.
+            if isinstance(model, AutoBackend):
+                model = model
+            else:
+                model = AutoBackend(
+                    weights=model or self.args.model,
+                    device=select_device(self.args.device, self.args.batch),
+                    dnn=self.args.dnn,
+                    data=self.args.data,
+                    fp16=self.args.half,
+                )
             # self.model = model
             self.device = model.device  # update device
             self.args.half = model.fp16  # update half

@@ -66,6 +66,9 @@ class Detect(nn.Module):
             self.matryoshka_granularities = []
             for c in ch:
                 self.matryoshka_granularities.append([c // 8, c // 4, c // 2, c])
+            # Inference-time Matryoshka granularity selector.
+            # -1 = full-width (default), 0/1/2/3 = 1/8, 1/4, 1/2, 1 respectively.
+            self.matryoshka_infer_idx = -1
 
         self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
 
@@ -99,7 +102,7 @@ class Detect(nn.Module):
         if self.end2end:
             return self.forward_end2end(x)
 
-        if self.matryoshka and self.training:
+        if bool(getattr(self, "matryoshka", False)) and self.training:
             outputs = []
             for i in range(self.nl):  # for each feature map
                 one_level_output = []
@@ -151,6 +154,53 @@ class Detect(nn.Module):
                 granularity_output = [outputs[i][j] for i in range(self.nl)]
                 final_outputs.append(granularity_output)
             return final_outputs
+
+        # Matryoshka inference: optionally run the head at a reduced channel granularity.
+        # This keeps the rest of the model unchanged and only slices the head input channels.
+        if (
+            bool(getattr(self, "matryoshka", False))
+            and (not self.training)
+            and int(getattr(self, "matryoshka_infer_idx", -1)) != -1
+        ):
+            infer_idx = int(getattr(self, "matryoshka_infer_idx", -1))
+            for i in range(self.nl):
+                g = self.matryoshka_granularities[i][infer_idx]
+                x_sliced = x[i][:, :g, :, :]
+
+                # Process with cv2
+                cv2_0 = self.cv2[i][0]
+                y = F.conv2d(
+                    x_sliced,
+                    cv2_0.conv.weight[:, :g, :, :],
+                    cv2_0.conv.bias,
+                    stride=cv2_0.conv.stride,
+                    padding=cv2_0.conv.padding,
+                )
+                if hasattr(cv2_0, "bn"):
+                    y = cv2_0.bn(y)
+                if hasattr(cv2_0, "act"):
+                    y = cv2_0.act(y)
+                out_cv2 = self.cv2[i][1:](y)
+
+                # Process with cv3
+                cv3_0 = self.cv3[i][0]
+                y = F.conv2d(
+                    x_sliced,
+                    cv3_0.conv.weight[:, :g, :, :],
+                    cv3_0.conv.bias,
+                    stride=cv3_0.conv.stride,
+                    padding=cv3_0.conv.padding,
+                )
+                if hasattr(cv3_0, "bn"):
+                    y = cv3_0.bn(y)
+                if hasattr(cv3_0, "act"):
+                    y = cv3_0.act(y)
+                out_cv3 = self.cv3[i][1:](y)
+
+                x[i] = torch.cat((out_cv2, out_cv3), 1)
+
+            y = self._inference(x)
+            return y if self.export else (y, x)
 
         for i in range(self.nl):
 

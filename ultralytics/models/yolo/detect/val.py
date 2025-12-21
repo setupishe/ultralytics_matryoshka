@@ -8,10 +8,12 @@ import torch
 
 from ultralytics.data import build_dataloader, build_yolo_dataset, converter
 from ultralytics.engine.validator import BaseValidator
+from ultralytics.nn.autobackend import AutoBackend
 from ultralytics.utils import LOGGER, ops
 from ultralytics.utils.checks import check_requirements
 from ultralytics.utils.metrics import ConfusionMatrix, DetMetrics, box_iou
 from ultralytics.utils.plotting import output_to_target, plot_images
+from ultralytics.utils.torch_utils import de_parallel, select_device
 
 
 class DetectionValidator(BaseValidator):
@@ -46,6 +48,72 @@ class DetectionValidator(BaseValidator):
                 "WARNING ⚠️ 'save_hybrid=True' will append ground truth to predictions for autolabelling.\n"
                 "WARNING ⚠️ 'save_hybrid=True' will cause incorrect mAP.\n"
             )
+
+    def __call__(self, trainer=None, model=None):
+        """
+        Optionally run Matryoshka validation at multiple granularities and report separate metrics.
+
+        Enabled by args:
+          - matryoshka_val=True
+          - matryoshka_val_fracs="0.125,0.25,0.5,1.0" (comma-separated)
+        """
+        if trainer is not None or not bool(getattr(self.args, "matryoshka_val", False)):
+            return super().__call__(trainer=trainer, model=model)
+
+        # Build/reuse backend once
+        backend = model
+        if not isinstance(backend, AutoBackend):
+            backend = AutoBackend(
+                weights=backend or self.args.model,
+                device=select_device(self.args.device, self.args.batch),
+                dnn=self.args.dnn,
+                data=self.args.data,
+                fp16=self.args.half,
+            )
+
+        # Locate Detect head and verify Matryoshka support
+        torch_model = de_parallel(backend.model)
+        seq = getattr(torch_model, "model", None)
+        head = seq[-1] if isinstance(seq, (torch.nn.ModuleList, torch.nn.Sequential, list, tuple)) else None
+        if head is None or not bool(getattr(head, "matryoshka", False)):
+            LOGGER.warning("WARNING ⚠️ matryoshka_val=True but model does not have matryoshka-enabled Detect head.")
+            return super().__call__(trainer=None, model=backend)
+
+        # Parse requested fracs -> head indices
+        fracs_raw = getattr(self.args, "matryoshka_val_fracs", "0.125,0.25,0.5,1.0")
+        if isinstance(fracs_raw, (list, tuple)):
+            fracs = [float(x) for x in fracs_raw]
+        else:
+            fracs = [float(x) for x in str(fracs_raw).replace(" ", "").split(",") if x]
+        frac_to_idx = {0.125: 0, 0.25: 1, 0.5: 2, 1.0: 3}
+        idxs = []
+        for f in fracs:
+            if f not in frac_to_idx:
+                raise ValueError(
+                    f"Unsupported matryoshka_val_fracs value {f}. Supported: {sorted(frac_to_idx.keys())}"
+                )
+            idxs.append(frac_to_idx[f])
+
+        # Avoid clobbering outputs across repeated eval runs
+        orig_save_json, orig_save_txt, orig_plots = self.args.save_json, self.args.save_txt, self.args.plots
+        self.args.save_json, self.args.save_txt, self.args.plots = False, False, False
+
+        results_by_frac = {}
+        try:
+            for f, idx in zip(fracs, idxs):
+                head.matryoshka_infer_idx = int(idx)
+                LOGGER.info(f"\nMatryoshka validation: running inference at width fraction={f:g} (idx={idx})")
+                results_by_frac[f] = super().__call__(trainer=None, model=backend)
+        finally:
+            head.matryoshka_infer_idx = -1
+            self.args.save_json, self.args.save_txt, self.args.plots = orig_save_json, orig_save_txt, orig_plots
+
+        # Flatten results with a prefix for easy downstream consumption
+        out = {}
+        for f, stats in results_by_frac.items():
+            for k, v in stats.items():
+                out[f"matryoshka/{f:g}/{k}"] = v
+        return out
 
     def preprocess(self, batch):
         """Preprocesses batch of images for YOLO training."""
