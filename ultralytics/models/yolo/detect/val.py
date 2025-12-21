@@ -71,12 +71,12 @@ class DetectionValidator(BaseValidator):
                 fp16=self.args.half,
             )
 
-        # Locate Detect head and verify Matryoshka support
+        # Locate Detect head
         torch_model = de_parallel(backend.model)
         seq = getattr(torch_model, "model", None)
         head = seq[-1] if isinstance(seq, (torch.nn.ModuleList, torch.nn.Sequential, list, tuple)) else None
-        if head is None or not bool(getattr(head, "matryoshka", False)):
-            LOGGER.warning("WARNING ⚠️ matryoshka_val=True but model does not have matryoshka-enabled Detect head.")
+        if head is None or not (hasattr(head, "cv2") and hasattr(head, "cv3")):
+            LOGGER.warning("WARNING ⚠️ matryoshka_val=True but model does not have a Detect head.")
             return super().__call__(trainer=None, model=backend)
 
         # Parse requested fracs -> head indices
@@ -113,6 +113,8 @@ class DetectionValidator(BaseValidator):
         for f, stats in results_by_frac.items():
             for k, v in stats.items():
                 out[f"matryoshka/{f:g}/{k}"] = v
+        # Attach for users calling `model.val()` (which returns DetMetrics).
+        setattr(self.metrics, "matryoshka_results", out)
         return out
 
     def preprocess(self, batch):

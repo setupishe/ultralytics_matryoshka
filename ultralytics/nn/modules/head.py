@@ -157,14 +157,20 @@ class Detect(nn.Module):
 
         # Matryoshka inference: optionally run the head at a reduced channel granularity.
         # This keeps the rest of the model unchanged and only slices the head input channels.
-        if (
-            bool(getattr(self, "matryoshka", False))
-            and (not self.training)
-            and int(getattr(self, "matryoshka_infer_idx", -1)) != -1
-        ):
+        if (not self.training) and int(getattr(self, "matryoshka_infer_idx", -1)) != -1:
             infer_idx = int(getattr(self, "matryoshka_infer_idx", -1))
+            if infer_idx not in (0, 1, 2, 3):
+                raise ValueError(
+                    f"matryoshka_infer_idx must be one of -1,0,1,2,3 but got {infer_idx}"
+                )
             for i in range(self.nl):
-                g = self.matryoshka_granularities[i][infer_idx]
+                # Compute granularities on-the-fly for vanilla models/checkpoints.
+                # Prefer precomputed granularities if present (matryoshka-trained models).
+                if hasattr(self, "matryoshka_granularities"):
+                    g = self.matryoshka_granularities[i][infer_idx]
+                else:
+                    c = int(x[i].shape[1])
+                    g = [max(1, c // 8), max(1, c // 4), max(1, c // 2), c][infer_idx]
                 x_sliced = x[i][:, :g, :, :]
 
                 # Process with cv2
