@@ -120,29 +120,47 @@ class BboxLoss(nn.Module):
         target_scores,
         target_scores_sum,
         fg_mask,
+        return_per_sample=False,
     ):
         """IoU loss."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
         iou = bbox_iou(
             pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True
         )
-        loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        loss_iou_items = ((1.0 - iou) * weight)
+        loss_iou = loss_iou_items.sum() / target_scores_sum
 
         # DFL loss
         if self.dfl_loss:
             target_ltrb = bbox2dist(
                 anchor_points, target_bboxes, self.dfl_loss.reg_max - 1
             )
-            loss_dfl = (
+            loss_dfl_items = (
                 self.dfl_loss(
                     pred_dist[fg_mask].view(-1, self.dfl_loss.reg_max),
                     target_ltrb[fg_mask],
                 )
                 * weight
             )
-            loss_dfl = loss_dfl.sum() / target_scores_sum
+            loss_dfl = loss_dfl_items.sum() / target_scores_sum
         else:
             loss_dfl = torch.tensor(0.0).to(pred_dist.device)
+            loss_dfl_items = None
+
+        if return_per_sample:
+            batch_size = fg_mask.shape[0]
+            batch_idx = torch.arange(batch_size, device=fg_mask.device).view(-1, 1).expand_as(fg_mask)[fg_mask]
+            
+            loss_iou_per_sample = torch.zeros(batch_size, device=fg_mask.device)
+            loss_iou_per_sample.scatter_add_(0, batch_idx, loss_iou_items.squeeze(-1))
+            loss_iou_per_sample /= target_scores_sum
+            
+            loss_dfl_per_sample = torch.zeros(batch_size, device=fg_mask.device)
+            if loss_dfl_items is not None:
+                loss_dfl_per_sample.scatter_add_(0, batch_idx, loss_dfl_items.squeeze(-1))
+                loss_dfl_per_sample /= target_scores_sum
+                
+            return loss_iou, loss_dfl, loss_iou_per_sample, loss_dfl_per_sample
 
         return loss_iou, loss_dfl
 
@@ -311,14 +329,14 @@ class v8DetectionLoss:
 
         # Cls loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        loss[1] = (
-            self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
-        )  # BCE
+        loss_cls_items = self.bce(pred_scores, target_scores.to(dtype))
+        loss[1] = loss_cls_items.sum() / target_scores_sum  # BCE
 
+        loss_iou_per_sample, loss_dfl_per_sample = None, None
         # Bbox loss
         if fg_mask.sum():
             target_bboxes /= stride_tensor
-            loss[0], loss[2] = self.bbox_loss(
+            loss[0], loss[2], loss_iou_per_sample, loss_dfl_per_sample = self.bbox_loss(
                 pred_distri,
                 pred_bboxes,
                 anchor_points,
@@ -326,13 +344,26 @@ class v8DetectionLoss:
                 target_scores,
                 target_scores_sum,
                 fg_mask,
+                return_per_sample=True,
             )
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
 
-        return loss.sum() * batch_size, loss.detach()  # loss(box, cls, dfl)
+        # Compute per-sample loss
+        loss_cls_per_sample = loss_cls_items.sum(dim=(1, 2)) / target_scores_sum * self.hyp.cls
+        
+        if loss_iou_per_sample is not None:
+            loss_iou_per_sample *= self.hyp.box
+            loss_dfl_per_sample *= self.hyp.dfl
+        else:
+            loss_iou_per_sample = torch.zeros(batch_size, device=self.device)
+            loss_dfl_per_sample = torch.zeros(batch_size, device=self.device)
+            
+        per_sample_loss = torch.stack([loss_iou_per_sample, loss_cls_per_sample, loss_dfl_per_sample], dim=1).detach()
+
+        return loss.sum() * batch_size, loss.detach(), per_sample_loss  # loss(box, cls, dfl), per_sample_loss
 
 
 class v8SegmentationLoss(v8DetectionLoss):

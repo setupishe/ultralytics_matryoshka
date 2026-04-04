@@ -333,6 +333,9 @@ class BaseTrainer:
         self.epoch_time = None
         self.epoch_time_start = time.time()
         self.train_time_start = time.time()
+        self._psl_values = []   # list of np.ndarray [batch_size, 3]
+        self._psl_files = []    # list of str (im_file paths)
+        self._psl_epochs = []   # list of int (epoch index per batch)
         self.run_callbacks("on_train_start")
         LOGGER.info(
             f'Image sizes {self.args.imgsz} train, {self.args.imgsz} val\n'
@@ -383,7 +386,20 @@ class BaseTrainer:
                 # Forward
                 with autocast(self.amp):
                     batch = self.preprocess_batch(batch)
-                    self.loss, self.loss_items = self.model(batch)
+                    out = self.model(batch)
+                    if len(out) == 3:
+                        self.loss, self.loss_items, per_sample_loss = out
+                    else:
+                        self.loss, self.loss_items = out
+                        per_sample_loss = None
+                        
+                    if per_sample_loss is not None and hasattr(self, "_psl_values"):
+                        # Non-blocking move to CPU; accumulate as arrays, not dicts
+                        psl_cpu = per_sample_loss.detach().cpu().numpy()
+                        self._psl_values.append(psl_cpu)
+                        self._psl_files.extend(batch["im_file"])
+                        self._psl_epochs.append(epoch)
+                            
                     if RANK != -1:
                         self.loss *= world_size
                     self.tloss = (
@@ -453,6 +469,31 @@ class BaseTrainer:
                 self.scheduler.last_epoch = self.epoch  # do not move
                 self.stop |= epoch >= self.epochs  # stop if exceeded epochs
             self.run_callbacks("on_fit_epoch_end")
+            
+            if hasattr(self, "_psl_values") and self._psl_values and RANK in {-1, 0}:
+                import pandas as pd
+                import numpy as np
+                values = np.concatenate(self._psl_values, axis=0)  # [N, 3]
+                # repeat epoch index to match per-image count per batch
+                epoch_col = np.repeat(
+                    self._psl_epochs,
+                    [v.shape[0] for v in self._psl_values],
+                )
+                df = pd.DataFrame({
+                    "epoch": epoch_col,
+                    "im_file": self._psl_files,
+                    "loss_iou": values[:, 0],
+                    "loss_cls": values[:, 1],
+                    "loss_dfl": values[:, 2],
+                })
+                csv_path = self.save_dir / "per_sample_loss.csv"
+                # Open once; tell()==0 means file is new/empty → write header
+                with open(csv_path, "a", newline="") as f:
+                    df.to_csv(f, header=f.tell() == 0, index=False)
+                self._psl_values.clear()
+                self._psl_files.clear()
+                self._psl_epochs.clear()
+                
             gc.collect()
             if MACOS:
                 torch.mps.empty_cache()  # clear unified memory at end of epoch, may help MPS' management of 'unlimited' virtual memoy
