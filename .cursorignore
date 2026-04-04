@@ -1,0 +1,18 @@
+# Model weights and compiled artifacts
+*.pt
+*.onnx
+*.engine
+runs/**/weights/
+
+# Training visualization images (thousands of files, no semantic value)
+runs/**/*.jpg
+runs/**/*.png
+
+# Python artifacts
+__pycache__/
+*.pyc
+ultralytics.egg-info/
+
+# Docs and docker (not relevant to PhD research)
+docs/
+docker/
