@@ -204,8 +204,8 @@ class MatryoshkaDetectionLoss:
                 loss_items += detached_losses * w
         else:
             for i, f in enumerate(feats_list):
-                # v8_loss returns (scalar loss for backprop, tensor of 3 losses for display)
-                scalar_loss, detached_losses = self.v8_loss(f, batch)
+                out = self.v8_loss(f, batch)
+                scalar_loss, detached_losses = out[0], out[1]
                 w = weights_tensor[i]
                 total_loss += scalar_loss * w
                 loss_items += detached_losses * w

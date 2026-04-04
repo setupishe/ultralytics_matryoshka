@@ -472,7 +472,6 @@ class BaseTrainer:
             
             if hasattr(self, "_psl_values") and self._psl_values and RANK in {-1, 0}:
                 import pandas as pd
-                import numpy as np
                 values = np.concatenate(self._psl_values, axis=0)  # [N, 3]
                 # repeat epoch index to match per-image count per batch
                 epoch_col = np.repeat(
