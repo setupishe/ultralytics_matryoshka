@@ -522,6 +522,21 @@ class BaseTrainer:
         self.last.write_bytes(serialized_ckpt)  # save last.pt
         if self.best_fitness == self.fitness:
             self.best.write_bytes(serialized_ckpt)  # save best.pt
+            # best_map.txt next to best_conf.txt (run save_dir): line 1 = box mAP only, line 2 = 1-based epoch
+            # (B)=box; never (M) mask or (P) pose — those are different tasks/metrics.
+            text = None
+            for key in ("metrics/mAP50-95(B)", "metrics/mAP50(B)"):
+                if key not in self.metrics:
+                    continue
+                v = self.metrics[key]
+                try:
+                    x = float(v.item() if hasattr(v, "item") else v)
+                except (TypeError, ValueError):
+                    continue
+                text = f"{x}\n{self.epoch + 1}\n"
+                break
+            if text is not None:
+                (self.save_dir / "best_map.txt").write_text(text, encoding="utf-8")
         if (self.save_period > 0) and (self.epoch % self.save_period == 0):
             (self.wdir / f"epoch{self.epoch}.pt").write_bytes(serialized_ckpt)  # save epoch, i.e. 'epoch3.pt'
 
