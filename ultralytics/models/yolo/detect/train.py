@@ -107,6 +107,19 @@ class DetectionTrainer(BaseTrainer):
                 head.matryoshka_bn_aux_freeze = bool(
                     getattr(self.args, "matryoshka_bn_aux_freeze", False)
                 )
+            head.matryoshka_sample_n = int(
+                getattr(self.args, "matryoshka_sample_n", -1)
+            )
+            raw_divs = getattr(self.args, "matryoshka_granularity_divs", None)
+            if raw_divs is not None:
+                if isinstance(raw_divs, str):
+                    divs = [int(x) for x in raw_divs.replace(" ", "").split(",") if x]
+                else:
+                    divs = [int(x) for x in raw_divs]
+                head.matryoshka_granularity_divs = divs
+                head.matryoshka_granularities = [
+                    [max(1, c // d) for d in divs] for c in head.ch
+                ]
         # TODO: self.model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc
 
     def get_model(self, cfg=None, weights=None, verbose=True):

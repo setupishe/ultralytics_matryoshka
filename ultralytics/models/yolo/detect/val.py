@@ -85,7 +85,12 @@ class DetectionValidator(BaseValidator):
             fracs = [float(x) for x in fracs_raw]
         else:
             fracs = [float(x) for x in str(fracs_raw).replace(" ", "").split(",") if x]
-        frac_to_idx = {0.125: 0, 0.25: 1, 0.5: 2, 1.0: 3}
+        if hasattr(head, "matryoshka_granularities") and head.matryoshka_granularities:
+            ch0 = sum(head.matryoshka_granularities[0])  # not needed, use divs
+            divs = getattr(head, "matryoshka_granularity_divs", None) or [8, 4, 2, 1]
+            frac_to_idx = {round(1.0 / d, 4): i for i, d in enumerate(divs)}
+        else:
+            frac_to_idx = {0.125: 0, 0.25: 1, 0.5: 2, 1.0: 3}
         idxs = []
         for f in fracs:
             if f not in frac_to_idx:

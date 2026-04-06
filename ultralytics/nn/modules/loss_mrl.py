@@ -19,6 +19,7 @@ class MatryoshkaDetectionLoss:
         self.hyp = model.args
         self.v8_loss = v8DetectionLoss(model)
         self._matryoshka_step = 0  # local step counter for scheduling
+        self._detect_head = model.model[-1]
 
     def _loss_with_shared_assign(
         self,
@@ -90,19 +91,24 @@ class MatryoshkaDetectionLoss:
             feats = preds[1] if isinstance(preds, tuple) and len(preds) == 2 else preds
             feats_list = [feats]
 
-        # Build weights (default to equal weights if none provided)
+        # Build weights (default to equal weights if none provided).
+        # When stochastic sampling is active, the head stores which granularity
+        # indices ran this step — index into the full weight vector accordingly.
         num_sets = len(feats_list)
+        active_indices = getattr(self._detect_head, "_matryoshka_active_indices", None)
         weights = getattr(self.hyp, "matryoshka_weights", None)
         if weights is None:
-            # NOTE: no normalization; this preserves full-width gradient scale.
             weights_tensor = torch.ones(num_sets, device=self.device)
         else:
-            # Convert to tensor; fall back to equal if shape mismatch. No normalization.
             try:
-                weights_tensor = torch.as_tensor(
+                full_weights = torch.as_tensor(
                     weights, dtype=torch.float32, device=self.device
                 )
-                if weights_tensor.numel() != num_sets:
+                if active_indices is not None and full_weights.numel() > num_sets:
+                    weights_tensor = full_weights[active_indices]
+                elif full_weights.numel() == num_sets:
+                    weights_tensor = full_weights
+                else:
                     weights_tensor = torch.ones(num_sets, device=self.device)
             except Exception:
                 weights_tensor = torch.ones(num_sets, device=self.device)

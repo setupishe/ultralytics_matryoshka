@@ -566,8 +566,9 @@ DEFAULT_CFG_DICT["matryoshka_weight_warmup"] = False
 # Warmup starts after this many calls to the loss (0 = start immediately).
 DEFAULT_CFG_DICT["matryoshka_weight_warmup_start_step"] = 0
 # Validation: optionally evaluate Matryoshka granularities separately in `yolo val task=detect`.
+DEFAULT_CFG_DICT["matryoshka_sample_n"] = -1
+DEFAULT_CFG_DICT["matryoshka_granularity_divs"] = None
 DEFAULT_CFG_DICT["matryoshka_val"] = False
-# Comma-separated list of fractions to evaluate. Supported defaults: 0.125,0.25,0.5,1.0
 DEFAULT_CFG_DICT["matryoshka_val_fracs"] = "0.125,0.25,0.5,1.0"
 DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
 

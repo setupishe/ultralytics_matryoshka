@@ -4,6 +4,7 @@
 import contextlib
 import copy
 import math
+import random
 
 import torch
 import torch.nn as nn
@@ -34,14 +35,16 @@ class Detect(nn.Module):
     anchors = torch.empty(0)  # init
     strides = torch.empty(0)  # init
 
-    def __init__(self, nc=80, ch=(), matryoshka=False, matryoshka_bn_aux_freeze=False):
+    def __init__(self, nc=80, ch=(), matryoshka=False, matryoshka_bn_aux_freeze=False,
+                 matryoshka_sample_n=-1):
         """Initializes the YOLOv8 detection layer with specified number of classes and channels."""
         super().__init__()
         self.nc = nc  # number of classes
         self.nl = len(ch)  # number of detection layers
         self.matryoshka = matryoshka
-        # If True, freeze BN running-stat updates for auxiliary Matryoshka granularities (keep batch-stat behavior).
         self.matryoshka_bn_aux_freeze = matryoshka_bn_aux_freeze
+        self.matryoshka_sample_n = matryoshka_sample_n
+        self.matryoshka_granularity_divs = None
         self.ch = ch
 
         self.reg_max = (
@@ -64,10 +67,9 @@ class Detect(nn.Module):
         )
         if self.matryoshka:
             self.matryoshka_granularities = []
+            divs = self.matryoshka_granularity_divs or [8, 4, 2, 1]
             for c in ch:
-                self.matryoshka_granularities.append([c // 8, c // 4, c // 2, c])
-            # Inference-time Matryoshka granularity selector.
-            # -1 = full-width (default), 0/1/2/3 = 1/8, 1/4, 1/2, 1 respectively.
+                self.matryoshka_granularities.append([max(1, c // d) for d in divs])
             self.matryoshka_infer_idx = -1
 
         self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
@@ -103,11 +105,23 @@ class Detect(nn.Module):
             return self.forward_end2end(x)
 
         if bool(getattr(self, "matryoshka", False)) and self.training:
+            num_g = len(self.matryoshka_granularities[0])
+            all_indices = list(range(num_g))
+            sample_n = int(getattr(self, "matryoshka_sample_n", -1))
+
+            if 0 < sample_n < num_g:
+                aux_indices = random.sample(all_indices[:-1], sample_n - 1)
+                active_indices = sorted(aux_indices + [all_indices[-1]])
+            else:
+                active_indices = all_indices
+            self._matryoshka_active_indices = active_indices
+
             outputs = []
-            for i in range(self.nl):  # for each feature map
+            for i in range(self.nl):
                 one_level_output = []
-                for g in self.matryoshka_granularities[i]:
-                    is_main = g == self.matryoshka_granularities[i][-1]
+                for idx in active_indices:
+                    g = self.matryoshka_granularities[i][idx]
+                    is_main = idx == all_indices[-1]
                     freeze_aux_bn = (
                         bool(getattr(self, "matryoshka_bn_aux_freeze", False))
                         and not is_main
@@ -120,7 +134,6 @@ class Detect(nn.Module):
                         else contextlib.nullcontext()
                     )
                     with bn_ctx:
-                        # Process with cv2
                         cv2_0 = self.cv2[i][0]
                         y = F.conv2d(
                             x_sliced,
@@ -132,7 +145,6 @@ class Detect(nn.Module):
                         y = cv2_0.act(y)
                         out_cv2 = self.cv2[i][1:](y)
 
-                        # Process with cv3
                         cv3_0 = self.cv3[i][0]
                         y = F.conv2d(
                             x_sliced,
@@ -147,10 +159,9 @@ class Detect(nn.Module):
                         one_level_output.append(torch.cat((out_cv2, out_cv3), 1))
                 outputs.append(one_level_output)
 
-            # Transpose outputs to be [granularity][nl]
+            num_active = len(active_indices)
             final_outputs = []
-            num_granularities = len(self.matryoshka_granularities[0])
-            for j in range(num_granularities):
+            for j in range(num_active):
                 granularity_output = [outputs[i][j] for i in range(self.nl)]
                 final_outputs.append(granularity_output)
             return final_outputs
@@ -159,9 +170,10 @@ class Detect(nn.Module):
         # This keeps the rest of the model unchanged and only slices the head input channels.
         if (not self.training) and int(getattr(self, "matryoshka_infer_idx", -1)) != -1:
             infer_idx = int(getattr(self, "matryoshka_infer_idx", -1))
-            if infer_idx not in (0, 1, 2, 3):
+            num_g = len(self.matryoshka_granularities[0]) if hasattr(self, "matryoshka_granularities") else 4
+            if infer_idx < 0 or infer_idx >= num_g:
                 raise ValueError(
-                    f"matryoshka_infer_idx must be one of -1,0,1,2,3 but got {infer_idx}"
+                    f"matryoshka_infer_idx must be in 0..{num_g-1} but got {infer_idx}"
                 )
             for i in range(self.nl):
                 # Compute granularities on-the-fly for vanilla models/checkpoints.
