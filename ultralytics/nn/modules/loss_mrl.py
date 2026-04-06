@@ -94,12 +94,14 @@ class MatryoshkaDetectionLoss:
         # Build weights (default to equal weights if none provided).
         # When stochastic sampling is active, the head stores which granularity
         # indices ran this step — index into the full weight vector accordingly.
+        # During validation (num_sets==1), skip active_indices entirely — the
+        # attribute may be stale from model construction.
         num_sets = len(feats_list)
-        active_indices = getattr(self._detect_head, "_matryoshka_active_indices", None)
         weights = getattr(self.hyp, "matryoshka_weights", None)
-        if weights is None:
+        if num_sets == 1 or weights is None:
             weights_tensor = torch.ones(num_sets, device=self.device)
         else:
+            active_indices = getattr(self._detect_head, "_matryoshka_active_indices", None)
             try:
                 full_weights = torch.as_tensor(
                     weights, dtype=torch.float32, device=self.device
