@@ -719,6 +719,13 @@ def ap_per_class(
         v for k, v in names.items() if k in unique_classes
     ]  # list: only classes that have data
     names = dict(enumerate(names))  # to dict
+    # Save best_conf.txt regardless of plot flag (used downstream by AL pipeline).
+    if save_dir is not None:
+        try:
+            with open(save_dir / "best_conf.txt", "w") as f:
+                f.write(str(x[smooth(f1_curve.mean(0), 0.05).argmax()]))
+        except Exception:
+            pass
     if plot:
         plot_pr_curve(
             x,
@@ -736,8 +743,6 @@ def ap_per_class(
             ylabel="F1",
             on_plot=on_plot,
         )
-        with open(save_dir / "best_conf.txt", "w") as f:
-            f.write(str(x[smooth(f1_curve.mean(0), 0.05).argmax()]))
         plot_mc_curve(
             x,
             p_curve,
